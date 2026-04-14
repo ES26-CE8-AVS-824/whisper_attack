@@ -1,0 +1,103 @@
+# Attack configuration for VCTK dataset (CSTR-Edinburgh/VCTK-Corpus-0.92)
+# using the SNR-constrained PGD (Projected Gradient Descent) attack.
+#
+# Usage example:
+#   python run_attack.py attack_configs/whisper/pgd_vctk.yaml \
+#       --root=/path/to/root \
+#       --model_label=tiny \
+#       --snr=40 \
+#       --nb_iter=100 \
+#       --seed=1002
+#
+# On the first run, set skip_prep: False so that vctk_prepare.py downloads
+# 100 VCTK utterances and writes the CSV.  On subsequent runs you can set
+# skip_prep: True (or pass --skip_prep=True on the CLI) to reuse the cached
+# audio and CSV.
+#
+# Perturbed audio is saved to:
+#   <root>/attacks/<attack_name>/<source_model_name>-<snr>/<seed>/save/
+#
+# Evaluation WER is written to:
+#   <root>/attacks/<attack_name>/<source_model_name>-<snr>/<seed>/wer_vctk-100.txt
+
+# General information
+seed: 1002
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+root: !PLACEHOLDER
+tokenizers_folder: !ref <root>/tokenizers
+
+# Hyperparameters below are dependent on the attack and model used
+# and should be changed at the user's discretion
+# -------------------------------------------------------------
+# Attack information
+snr: 40
+nb_iter: 100
+attack_class: !name:robust_speech.adversarial.attacks.pgd.SNRPGDAttack
+  targeted: False
+  snr: !ref <snr>
+  nb_iter: !ref <nb_iter>
+save_audio: True
+load_audio: True
+attack_name: pgd
+
+# Model information
+model_label: tiny
+model_name: !ref whisper-<model_label>
+target_brain_class: !name:sb_whisper_binding.WhisperASR
+target_brain_hparams_file: !ref model_configs/<model_label>.yaml
+source_model_name: !ref <model_name>
+source_brain_class: !ref <target_brain_class>
+source_brain_hparams_file: !ref model_configs/<model_label>.yaml
+
+# Tokenizer information (compatible with target and source models).
+# Use tokenizer_name: gpt2 when model_label ends with .en (English-only models).
+tokenizer_name: multilingual
+tokenizer_builder: !name:whisper.tokenizer.get_tokenizer
+
+# -------------------------------------------------------------
+
+output_folder: !ref <root>/attacks/<attack_name>/<source_model_name>-<snr>/<seed>
+wer_file: !ref <output_folder>/wer.txt
+save_folder: !ref <output_folder>
+log: !ref <output_folder>/log.txt
+save_audio_path: !ref <output_folder>/save
+
+# dataset_prepare_fct points to vctk_prepare.prepare_vctk which:
+#   1. Streams 100 utterances from CSTR-Edinburgh/VCTK-Corpus-0.92 on HuggingFace
+#   2. Saves them as 16 kHz WAV files under <data_folder>/audio/
+#   3. Writes <csv_folder>/vctk-100.csv
+dataset_prepare_fct: !name:vctk_prepare.prepare_vctk
+dataio_prepare_fct: !name:robust_speech.data.dataio.dataio_prepare
+
+# Data files
+# Set data_folder to any writable directory; audio will be downloaded there.
+data_folder: !ref <root>/data/VCTK
+csv_folder: !ref <data_folder>/csv
+# Set skip_prep to True after the first successful run to reuse cached files.
+skip_prep: False
+test_splits: ["vctk-100"]
+ckpt_interval_minutes: 15 # save checkpoint every N min
+data_csv_name: vctk-100
+test_csv:
+   - !ref <csv_folder>/<data_csv_name>.csv
+batch_size: 1 # This works for 2x GPUs with 32GB
+# VCTK utterances are short read-speech sentences (typically 2–6 s).
+# The 14 s ceiling keeps the same limit as LibriSpeech configs.
+avoid_if_longer_than: 14.0
+sorting: random
+
+# Feature parameters
+sample_rate: 16000
+n_fft: 400
+n_mels: 80
+
+# Decoding parameters (only for text_pipeline)
+blank_index: 0
+bos_index: 1
+eos_index: 2
+
+test_dataloader_opts:
+    batch_size: 1
+
+logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <log>
