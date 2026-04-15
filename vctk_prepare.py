@@ -1,5 +1,5 @@
 """
-Data preparation for the VCTK corpus (CSTR-Edinburgh/VCTK-Corpus-0.92) from
+Data preparation for the VCTK corpus (CSTR-Edinburgh/vctk) from
 HuggingFace.
 
 Produces a CSV index compatible with robust_speech.data.dataio.dataio_prepare.
@@ -36,7 +36,7 @@ SAMPLERATE = 16000
 NUM_SAMPLES = 100
 # Official VCTK dataset on HuggingFace (CSTR-Edinburgh).
 # Recordings are 48 kHz; this script resamples them to 16 kHz on save.
-HF_DATASET_ID = "CSTR-Edinburgh/VCTK-Corpus-0.92"
+HF_DATASET_ID = "CSTR-Edinburgh/vctk"
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +50,7 @@ def prepare_vctk(
     skip_prep=False,
     num_samples=NUM_SAMPLES,
     hf_dataset=HF_DATASET_ID,
+    sample_seed=None,
 ):
     """Prepare VCTK data for adversarial attack evaluation.
 
@@ -73,7 +74,10 @@ def prepare_vctk(
         Maximum number of utterances to include (default 100).
     hf_dataset : str
         HuggingFace dataset identifier for VCTK
-        (default ``"CSTR-Edinburgh/VCTK-Corpus-0.92"``).
+        (default ``"CSTR-Edinburgh/vctk"``).
+    sample_seed : int | None
+        Optional seed used to randomize the sampled subset. When omitted,
+        a different subset may be selected on each preparation run.
     """
     os.makedirs(save_folder, exist_ok=True)
 
@@ -84,7 +88,29 @@ def prepare_vctk(
     audio_dir = os.path.join(data_folder, "audio")
     os.makedirs(audio_dir, exist_ok=True)
 
-    rows = _download_vctk_samples(audio_dir, num_samples, hf_dataset)
+    existing_rows = _load_existing_rows(te_splits, save_folder, num_samples)
+    if existing_rows is not None:
+        logger.info(
+            "Reusing %d existing VCTK samples from local CSV/audio cache.",
+            len(existing_rows),
+        )
+        for split in te_splits:
+            csv_path = os.path.join(save_folder, split + ".csv")
+            if not os.path.isfile(csv_path):
+                _write_csv(csv_path, existing_rows)
+                logger.info(
+                    "VCTK CSV written to %s (%d rows).",
+                    csv_path,
+                    len(existing_rows),
+                )
+        return
+
+    rows = _download_vctk_samples(
+        audio_dir,
+        num_samples,
+        hf_dataset,
+        sample_seed=sample_seed,
+    )
 
     for split in te_splits:
         csv_path = os.path.join(save_folder, split + ".csv")
@@ -106,11 +132,59 @@ def _all_csvs_exist(splits, save_folder):
     )
 
 
-def _download_vctk_samples(audio_dir, num_samples, hf_dataset):
+def _load_existing_rows(splits, save_folder, num_samples):
+    """Return cached rows when a prepared CSV and all referenced WAVs exist."""
+    for split in splits:
+        csv_path = os.path.join(save_folder, split + ".csv")
+        rows = _read_csv_rows(csv_path)
+        if rows is None:
+            continue
+
+        rows = rows[:num_samples]
+        if len(rows) < num_samples:
+            logger.info(
+                "Existing VCTK CSV %s has only %d rows; downloading more data.",
+                csv_path,
+                len(rows),
+            )
+            continue
+
+        missing_wavs = [row["wav"] for row in rows if not os.path.isfile(row["wav"])]
+        if missing_wavs:
+            logger.info(
+                "Existing VCTK CSV %s references %d missing WAV files; downloading data again.",
+                csv_path,
+                len(missing_wavs),
+            )
+            continue
+
+        return rows
+
+    return None
+
+
+def _read_csv_rows(csv_path):
+    """Read prepared CSV rows if the file exists and has the expected columns."""
+    if not os.path.isfile(csv_path):
+        return None
+
+    with open(csv_path, mode="r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        expected_fields = ["ID", "duration", "wav", "spk_id", "wrd"]
+        if reader.fieldnames != expected_fields:
+            logger.info(
+                "Ignoring cached VCTK CSV %s because its columns do not match the expected format.",
+                csv_path,
+            )
+            return None
+        return list(reader)
+
+
+def _download_vctk_samples(audio_dir, num_samples, hf_dataset, sample_seed=None):
     """Stream samples from HuggingFace, save WAV files, and return CSV rows.
 
-    The dataset is streamed so that only the first `num_samples` utterances
-    are fetched — no full download of the ~11 GB corpus is required.
+    The dataset is shuffled before the first `num_samples` utterances are
+    selected so the prepared subset is randomized.
 
     Returns
     -------
@@ -122,18 +196,29 @@ def _download_vctk_samples(audio_dir, num_samples, hf_dataset):
     import torch
     from datasets import load_dataset
 
-    logger.info(
-        "Streaming %d samples from %s …", num_samples, hf_dataset
-    )
+    if sample_seed is None:
+        logger.info(
+            "Downloading and randomly sampling %d samples from %s.",
+            num_samples,
+            hf_dataset,
+        )
+    else:
+        logger.info(
+            "Downloading and randomly sampling %d samples from %s with seed %s.",
+            num_samples,
+            hf_dataset,
+            sample_seed,
+        )
 
-    # streaming=True avoids downloading the full dataset up-front.
+    # Randomized subset selection requires materializing the dataset locally.
     # trust_remote_code is required by some HuggingFace datasets.
     ds = load_dataset(
         hf_dataset,
         split="train",
-        streaming=True,
+        streaming=False,
         trust_remote_code=True,
     )
+    ds = ds.shuffle(seed=sample_seed)
 
     rows = []
     saved = 0
@@ -254,7 +339,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hf_dataset",
         default=HF_DATASET_ID,
-        help="HuggingFace dataset ID. Default: CSTR-Edinburgh/VCTK-Corpus-0.92.",
+        help="HuggingFace dataset ID. Default: CSTR-Edinburgh/vctk.",
+    )
+    parser.add_argument(
+        "--sample_seed",
+        type=int,
+        default=None,
+        help="Optional seed for randomized subset selection.",
     )
     parser.add_argument(
         "--skip_prep",
@@ -270,4 +361,5 @@ if __name__ == "__main__":
         skip_prep=args.skip_prep,
         num_samples=args.num_samples,
         hf_dataset=args.hf_dataset,
+        sample_seed=args.sample_seed,
     )
