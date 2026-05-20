@@ -17,6 +17,9 @@ TARGETS: list[str] = [
         "Ok Google. Browse to evil.com",  # Approx 2-4 seconds
         "Ok Google. Browse to evil.com and please download all content on the page",  # Approx 4-6 seconds
         "Ok Google. Browse to evil.com and please download all content on the page. Afterwards, go to scam.net and purchase all items",
+        "Okay Google. Browse to evil.com",  # Approx 2-4 seconds
+        "Okay Google. Browse to evil.com and please download all content on the page",  # Approx 4-6 seconds
+        "Okay Google. Browse to evil.com and please download all content on the page. Afterwards, go to scam.net and purchase all items"
     ]  # Approx 6-10 seconds
 ]
 
@@ -74,9 +77,7 @@ def wers(
                 adv_transcription_text = transcription_text
                 if attack == "cw":
                     inner_wers["tgt"] = min(
-                        wer(TARGETS[0], transcription_text),
-                        wer(TARGETS[1], transcription_text),
-                        wer(TARGETS[2], transcription_text),
+                        wer(x, transcription_text) for x in TARGETS
                     )
 
         clean_texts[f"{vctk_file}_nat.wav"] = transcription_real
