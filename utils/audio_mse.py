@@ -10,6 +10,9 @@ Requirements:
 """
 
 import sys
+import os
+from glob import glob
+import argparse
 import numpy as np
 import librosa
 
@@ -40,29 +43,67 @@ def compute_mse(audio1, audio2, sr1, sr2):
     mse = np.mean((audio1 - audio2) ** 2)
     return mse
 
-def main():
-    if len(sys.argv) != 3:
-        print("Usage: python audio_mse.py <file1> <file2>")
-        sys.exit(1)
+def calculate_mse(file1, file2):
+    audio1, sr1 = librosa.load(file1, sr=None)
+    audio2, sr2 = librosa.load(file2, sr=None)
+    return compute_mse(audio1, audio2, sr1, sr2)
 
-    file1 = sys.argv[1]
-    file2 = sys.argv[2]
+
+def extract_id(filename):
+    base = os.path.basename(filename)
+    if base.endswith('_nat.wav'):
+        return base[:-8]
+    elif base.endswith('_adv.wav'):
+        return base[:-8]
+    return None
+
+
+def compare_directories(nat_dir, adv_dir):
+    nat_files = glob(os.path.join(nat_dir, '*_nat.wav'))
+    adv_files = glob(os.path.join(adv_dir, '*_adv.wav'))
+
+    nat_map = {extract_id(f): f for f in nat_files}
+    adv_map = {extract_id(f): f for f in adv_files}
+
+    common_ids = set(nat_map.keys()) & set(adv_map.keys())
+    if not common_ids:
+        raise ValueError("No matching ID pairs found between directories")
+
+    mses = []
+    for id_ in sorted(common_ids):
+        nat_path = nat_map[id_]
+        adv_path = adv_map[id_]
+        try:
+            mse = calculate_mse(nat_path, adv_path)
+            mses.append(mse)
+            print(f"{id_}: {mse:.10f}")
+        except Exception as e:
+            print(f"Error computing MSE for {id_}: {e}")
+
+    mean_mse = np.mean(mses) if mses else float('nan')
+    print(f"\nMean MSE: {mean_mse:.10f}")
+    if mean_mse > 0:
+        print(f"Mean MSE (dB): {10 * np.log10(mean_mse):.2f}")
+    else:
+        print("Mean MSE (dB): -inf")
+    return mean_mse
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Compute MSE between audio files or directories")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--files', nargs=2, metavar=('FILE1', 'FILE2'), help='Two audio files to compare')
+    group.add_argument('--dirs', nargs=2, metavar=('NAT_DIR', 'ADV_DIR'), help='Directories with *_nat.wav and *_adv.wav files')
+
+    args = parser.parse_args()
 
     try:
-        # Load audio files
-        audio1, sr1 = librosa.load(file1, sr=None)
-        audio2, sr2 = librosa.load(file2, sr=None)
-
-        # Compute MSE
-        mse = compute_mse(audio1, audio2, sr1, sr2)
-
-        # Output result
-        print(f"\nMSE between '{file1}' and '{file2}': {mse:.10f}")
-        print(f"MSE (dB): {10 * np.log10(mse):.2f}" if mse > 0 else "MSE (dB): -inf")
-
+        if args.files:
+            mse = calculate_mse(args.files[0], args.files[1])
+            print(f"\nMSE between '{args.files[0]}' and '{args.files[1]}': {mse:.10f}")
+            print(f"MSE (dB): {10 * np.log10(mse):.2f}" if mse > 0 else "MSE (dB): -inf")
+        else:
+            compare_directories(args.dirs[0], args.dirs[1])
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
-
-if __name__ == "__main__":
-    main()
